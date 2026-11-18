@@ -89,7 +89,7 @@ _FOV_EPS = 1e-3
 def pose_enc_to_extri_intri(pose_encoding: Tensor, images_hw=None):
     """Pose encodings (..., 9) -> extrinsics (..., 3, 4) and, given images_hw = (H, W), intrinsics (..., 3, 3) in pixels.
     Quaternions are normalized; fields of view are clamped to (eps, pi - eps). Runs in float32 (autocast disabled)."""
-    with torch.amp.autocast(device_type="cuda", enabled=False):
+    with torch.autocast(device_type=pose_encoding.device.type, enabled=False):
         translation = pose_encoding[..., :3]
         quat_xyzw = F.normalize(pose_encoding[..., 3:7], dim=-1)
         rotation = quat_to_mat(quat_xyzw)

@@ -12,7 +12,12 @@ from .layers import Attention, LayerScale, Mlp
 
 
 class GatedAttentionBlock(nn.Module):
-    """Pre-norm attention + MLP with constant gates (3, C): attention residual, MLP residual, output carry."""
+    """Pre-norm attention + MLP with constant gates (3, C): attention residual, MLP residual, output carry.
+
+    At inference the MLP runs MLP_CHUNK tokens at a time (it is token-wise, so the result is the same): its 4x wide
+    hidden layer is the largest buffer of a call (S x P x 3072), which this bounds."""
+
+    MLP_CHUNK = 32768
 
     def __init__(self, dim, num_heads, mlp_ratio=4.0, init_values=0.01, rope=None):
         super().__init__()
@@ -26,8 +31,19 @@ class GatedAttentionBlock(nn.Module):
     def forward(self, x, gates, pos=None, attn_fn=None):
         h = self.ls1(attn_fn(self.norm1(x)) if attn_fn is not None else self.attn(self.norm1(x), pos=pos))
         x = x + gates[0] * h
-        x = x + gates[1] * self.ls2(self.mlp(self.norm2(x)))
-        return gates[2] * x
+        del h
+        n = x.numel() // x.shape[-1]
+        if self.training or n <= self.MLP_CHUNK:
+            x = x + gates[1] * self.ls2(self.mlp(self.norm2(x)))
+            return gates[2] * x
+        flat, out = x.reshape(n, x.shape[-1]), None
+        for a in range(0, n, self.MLP_CHUNK):
+            c = flat[a:a + self.MLP_CHUNK]
+            y = gates[2] * (c + gates[1] * self.ls2(self.mlp(self.norm2(c))))
+            if out is None:
+                out = torch.empty(flat.shape, dtype=y.dtype, device=y.device)
+            out[a:a + self.MLP_CHUNK] = y
+        return out.reshape(x.shape)
 
 
 def _attn_kv(attn, x):

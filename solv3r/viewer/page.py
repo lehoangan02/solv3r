@@ -40,11 +40,29 @@ def _data_url(path):
     return "data:text/javascript;base64," + base64.b64encode(path.read_bytes()).decode()
 
 
-def write_html(path, pack, title="Solv3R", stats=()):
-    """path: the .html to write; pack: a packed solve (file path or bytes, solv3r.viewer.pack)."""
+VENDOR = HERE.parent.parent / "demo" / "static" / "vendor"     # three.js r160 and OrbitControls (MIT), as on jsDelivr
+
+
+def _offline_imports():
+    """three.js inside the page (about 0.9 MB), so the viewer also opens without a network; None if not vendored."""
+    three, orbit = VENDOR / "three.module.min.js", VENDOR / "OrbitControls.js"
+    if not (three.is_file() and orbit.is_file()):
+        return None
+    oc = orbit.read_text().replace("'./three.module.min.js'", "'three'").replace('"./three.module.min.js"', "'three'")
+    return {"three": _data_url(three),
+            "three/addons/controls/OrbitControls.js": "data:text/javascript;base64," + base64.b64encode(oc.encode()).decode()}
+
+
+def write_html(path, pack, title="Solv3R", stats=(), offline=False):
+    """path: the .html to write; pack: a packed solve (file path or bytes, solv3r.viewer.pack).  offline: three.js is
+    embedded in the page instead of loaded from jsDelivr."""
     raw = pack if isinstance(pack, (bytes, bytearray)) else Path(pack).read_bytes()
     imports = {"three": THREE + "build/three.module.min.js", "three/addons/": THREE + "examples/jsm/",
                "solv3r/solve.js": _data_url(HERE / "solve.js"), "solv3r/stage.js": _data_url(HERE / "stage.js")}
+    local = _offline_imports() if offline else None
+    if local:
+        imports.pop("three/addons/")
+        imports.update(local)
     page = (PAGE.replace("__CSS__", (HERE / "stage.css").read_text())
                 .replace("__IMPORTS__", json.dumps({"imports": imports}))
                 .replace("__SPEC__", json.dumps(dict(title=title, stats=list(stats))))

@@ -18,25 +18,25 @@ from .page import write_html
 __all__ = ["SNAPS", "Recorder", "save_solve_viewer", "save_stream_viewer", "write_html"]
 
 
-def save_solve_viewer(path, rec, labels, first_snap=None, title="Solv3R", stats=(), **kw):
+def save_solve_viewer(path, rec, labels, first_snap=None, title="Solv3R", stats=(), offline=False, **kw):
     """rec: a Recorder of the solve; labels: the views' names (in the solve's order); first_snap: per view, the index of
     the snapshot it joined at (default: all from the start).  kw: Recorder.pack options (sky=True leaves the sky out,
     horizon=deg for aerial captures, n_pts)."""
     tmp = f"{path}.s3r"
     meta = rec.pack(tmp, list(labels), [0] * len(labels) if first_snap is None else list(first_snap), title=title, **kw)
     try:
-        write_html(path, tmp, title, stats)
+        write_html(path, tmp, title, stats, offline=offline)
     finally:
         os.remove(tmp)
     return meta                                   # meta["view_keep"]: what save_solve needs to keep the same points
 
 
-def save_stream_viewer(path, images, res, labels=None, title="Solv3R", stats=(), **kw):
+def save_stream_viewer(path, images, res, labels=None, title="Solv3R", stats=(), offline=False, **kw):
     """images (F, 3, H, W) the frames; res: the StreamResult of a StreamingSolver(depth=True) run.  kw:
     pack_stream_result options (sky=True, horizon, per_frame)."""
     tmp = f"{path}.s3r"
     pack_stream_result(tmp, images, res, labels, title=title, **kw)
     try:
-        return write_html(path, tmp, title, stats)
+        return write_html(path, tmp, title, stats, offline=offline)
     finally:
         os.remove(tmp)

@@ -38,7 +38,7 @@ ON_SPACE = bool(os.environ.get("SPACE_ID"))
 LIMITED = ON_SPACE or bool(os.environ.get("SOLV3R_DEMO_LIMITS"))
 LIMITS = dict(offline=64, stages=64, stream=400, large=256) if LIMITED else dict(offline=160, stages=160, stream=3000, large=1024)
 gr.set_static_paths(paths=[p for p in (STATIC, E.OUT, EXAMPLES) if p])
-if torch.cuda.is_available() or ON_SPACE:
+if E.DEV != "cpu" or ON_SPACE:
     E.model()                                         # on ZeroGPU the weights go to the GPU at start-up
 
 
@@ -52,6 +52,9 @@ def device_info():
     if torch.cuda.is_available():
         p = torch.cuda.get_device_properties(0)
         return f"{p.name.replace('NVIDIA ', '')} · {p.total_memory / 2 ** 30:.0f} GB"
+    if E.DEV == "mps":
+        from solv3r import device as D
+        return f"{D.device_name('mps').replace(' (MPS)', '')} · {D.memory_info('mps')['total_gb']:.0f} GB (unified)"
     return "CPU"
 
 

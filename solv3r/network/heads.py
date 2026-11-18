@@ -31,6 +31,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from ..device import no_autocast
 from .layers import Block
 
 
@@ -118,10 +119,10 @@ class DecoderHead(nn.Module):
                     x = layer(x)
             x = F.interpolate(x, (H, W), mode="bilinear", align_corners=False)
             x = _concat_uv(x, aspect_ratio)
-            with torch.amp.autocast("cuda", enabled=False):
+            with no_autocast(x):
                 x = self.output_block(x.float())
         else:
-            with torch.amp.autocast("cuda", enabled=False):
+            with no_autocast(x):
                 x = self.head(x.float())
                 x = x.transpose(-1, -2).view(B, -1, ph, pw)
                 x = F.pixel_shuffle(x, self.patch_size)
@@ -139,7 +140,7 @@ class CameraHead(nn.Module):
 
     def forward(self, cls_token):
         x = self.mlp(cls_token)
-        with torch.amp.autocast("cuda", enabled=False):
+        with no_autocast(x):
             pose = self.fc_pose(x.float())
             pose[:, 7:] = F.relu(pose[:, 7:])
         return pose

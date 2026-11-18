@@ -76,7 +76,7 @@ def video_frames(video, out_dir=None):
         atexit.register(shutil.rmtree, out_dir, ignore_errors=True)
     os.makedirs(out_dir, exist_ok=True)
     try:
-        subprocess.run([_ffmpeg(), "-loglevel", "error", "-i", video, "-vsync", "0", "-q:v", "2",
+        subprocess.run([_ffmpeg(), "-loglevel", "error", "-i", video, "-fps_mode", "passthrough", "-q:v", "2",   # -vsync 0: gone in ffmpeg 7+
                         os.path.join(out_dir, "%06d.jpg")], check=True)
     except subprocess.CalledProcessError:
         raise ValueError(f"ffmpeg could not read the video {video}") from None

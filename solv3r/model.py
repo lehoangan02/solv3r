@@ -8,7 +8,6 @@ is defined in solv3r/network.
 """
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
+from . import device as _dev
 from .network import Solv3RNetwork
 from .network.cameras import pose_enc_to_extri_intri, rays_to_pose, to4x4
 
@@ -76,10 +76,9 @@ class Context:
 
 
 def autocast():
-    """Solv3R runs in bfloat16 autocast, as in training and in all reported results."""
-    if torch.cuda.is_available():
-        return torch.autocast("cuda", dtype=torch.bfloat16, cache_enabled=False)
-    return contextlib.nullcontext()
+    """Autocast in the precision chosen by Solv3R.from_pretrained (solv3r.device): bfloat16 on CUDA, as in training and in
+    all reported results; float16 on Apple silicon (MPS); none (float32) on the CPU."""
+    return _dev.autocast()
 
 
 class Solv3R(nn.Module):
@@ -88,10 +87,16 @@ class Solv3R(nn.Module):
         self.net = Solv3RNetwork()
 
     @classmethod
-    def from_pretrained(cls, checkpoint=None, device="cuda"):
+    def from_pretrained(cls, checkpoint=None, device="auto", precision="auto"):
         """checkpoint: a local .safetensors file or a Hugging Face model repo id.  By default checkpoints/solv3r.safetensors
-        under the working directory if it exists, else the released weights (downloaded once into the Hugging Face cache)."""
+        under the working directory if it exists (or SOLV3R_CHECKPOINT), else the released weights (downloaded once into
+        the Hugging Face cache).  device: 'auto' (cuda > mps > cpu), 'cuda', 'mps' or 'cpu'.  precision: 'auto' (bf16 on
+        CUDA, fp16 on MPS, fp32 on CPU), 'bf16', 'fp16' or 'fp32'; it sets the autocast of every solve (solv3r.device)."""
         from safetensors.torch import load_file
+
+        device = _dev.best_device(device)
+        model_dtype = _dev.set_precision(device, precision)
+        checkpoint = checkpoint or os.environ.get("SOLV3R_CHECKPOINT")
 
         if checkpoint is None:
             checkpoint = LOCAL_WEIGHTS if os.path.isfile(LOCAL_WEIGHTS) else HF_REPO
@@ -109,24 +114,35 @@ class Solv3R(nn.Module):
         model.load_state_dict(remap_checkpoint(load_file(checkpoint)), strict=True)
         model.requires_grad_(False)
         model.source = os.path.abspath(checkpoint)       # the weights file that was loaded
+        model.compute_dtype = model_dtype
         return model.eval().to(device)
 
     @property
     def device(self):
         return self.net.block.target_rms.device
 
+    @torch.no_grad()
+    def encode_features(self, images, chunk=32, encoder=None):
+        """Patch features (S, P, C) of images (S, 3, H, W) in [0, 1]; `encoder` (e.g. a Core ML encoder on the Neural
+        Engine, recon3d.ane) replaces the PyTorch image encoder when given."""
+        if encoder is not None:
+            return encoder(images).to(self.device)
+        with autocast():
+            return torch.cat([self.net.encode_images(images[i:i + chunk].to(self.device)) for i in range(0, len(images), chunk)])
+
     # ------------------------------------------------------------------ encode / start
     @torch.no_grad()
-    def encode(self, images, reference_first=True, chunk=32) -> Context:
+    def encode(self, images, reference_first=True, chunk=32, encoder=None) -> Context:
         """images (S, 3, H, W) in [0, 1], H and W multiples of 14 (see solv3r.images.load_images).
 
         The first view of a solve holds the reference camera token and defines the world frame. Views encoded on their
-        own and added to an existing solve later take reference_first=False.
+        own and added to an existing solve later take reference_first=False.  encoder: see encode_features.
         """
         S, _, H, W = images.shape
+        encoder = encoder if encoder is not None else getattr(self, "image_encoder", None)
+        z = self.encode_features(images, chunk, encoder)
         with autocast():
-            z = torch.cat([self.net.encode_images(images[i:i + chunk].to(self.device)) for i in range(0, S, chunk)])
-            x0 = torch.cat([self.net.view_tokens(S, reference_first), z], dim=1).float()
+            x0 = torch.cat([self.net.view_tokens(S, reference_first), z.to(self.net.camera_token.dtype)], dim=1).float()
             pos = self.net.rope_positions(S, H, W, self.device)
         return Context(x0, pos, H, W)
 
@@ -212,5 +228,5 @@ def cameras_from_rays(rays, depth_conf=None, patch_size=14):
     """Camera-to-world (S, 4, 4) and intrinsics (S, 3, 3) fitted to the predicted rays (the benchmark protocol)."""
     S, H, W, _ = rays.shape
     w = torch.ones_like(rays[..., 0]) if depth_conf is None else depth_conf
-    c2w, K = rays_to_pose(rays[None].float(), w[None].float(), H, W, patch_size)
+    c2w, K = rays_to_pose(rays[None].float().cpu(), w[None].float().cpu(), H, W, patch_size)   # linalg on the CPU (MPS)
     return c2w[0], K[0]

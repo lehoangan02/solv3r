@@ -181,7 +181,8 @@ def main():
                 ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
             except ImportError:
                 raise SystemExit("an .mp4 needs ffmpeg: install it, or pip install imageio-ffmpeg, or write a .gif")
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    from solv3r.device import best_device
+    dev = best_device()
     xyz, rgb = read_ply(f"{a.input}.ply")
     d = np.linalg.norm(xyz - np.median(xyz, 0), axis=1)                         # stray far points (distant terrain, sky
     xyz, rgb = xyz[d < 2.5 * np.quantile(d, 0.9)], rgb[d < 2.5 * np.quantile(d, 0.9)]   # the mask missed) leave, as in the viewer

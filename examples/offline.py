@@ -15,6 +15,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from solv3r import Solv3R, list_images, load_images  # noqa: E402
+from solv3r import device as D  # noqa: E402
 from solv3r.export import save_solve  # noqa: E402
 from solv3r.model import autocast  # noqa: E402
 from solv3r.viewer import Recorder, save_solve_viewer  # noqa: E402
@@ -47,8 +48,9 @@ def main():
     model = Solv3R.from_pretrained(a.checkpoint)
     paths = list_images(a.images, a.stride)
     total_frames = len(paths)
-    gpu = torch.cuda.get_device_properties(0)
-    free_gb = torch.cuda.mem_get_info()[0] / 1024**3
+    mem = D.memory_info(model.device)                  # CUDA, Apple MPS (unified memory) or CPU
+    free_gb = mem["free_gb"]
+    peak = D.PeakMemory(model.device).start()
     budget_gb = None
     n = a.num_frames
     if n is None and a.vram_gb is not None:
@@ -77,14 +79,14 @@ def main():
                              stats=[f"{len(paths)} views", f"{call} calls"])
     save_solve(f"{a.out}/solve", images, model.decode(z, ctx), names, keep=a.keep, sky=a.sky_mask, view_keep=meta["view_keep"])
     with open(f"{a.out}/note.txt", "w") as f:            # for logging: which GPU / how much VRAM this run had and used
-        f.write(f"gpu: {gpu.name}\n")
-        f.write(f"gpu_total_vram_gb: {gpu.total_memory / 1024**3:.1f}\n")
+        f.write(f"gpu: {D.device_name(model.device)}\n")
+        f.write(f"gpu_total_vram_gb: {mem['total_gb']:.1f}\n")
         f.write(f"gpu_free_vram_gb_at_start: {free_gb:.1f}  (the GPU may be shared with other jobs)\n")
         f.write(f"vram_budget_gb: {'none' if budget_gb is None else format(budget_gb, '.1f')}\n")
         f.write(f"frames_available: {total_frames}\n")
         f.write(f"frames_used: {len(paths)}\n")
         f.write(f"calls: {call}\n")
-        f.write(f"peak_torch_vram_gb: {torch.cuda.max_memory_allocated() / 1024**3:.2f}\n")
+        f.write(f"peak_torch_vram_gb: {peak.stop():.2f}\n")
         f.write(f"total_seconds: {time.time() - t0:.0f}\n")
         f.write(f"command: {' '.join(sys.argv)}\n")
 

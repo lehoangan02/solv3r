@@ -10,24 +10,48 @@ import urllib.request
 
 import numpy as np
 
-SKYSEG_ONNX_PATH = "skyseg.onnx"
+SKYSEG_ONNX_PATH = os.environ.get("SOLV3R_SKYSEG", "skyseg.onnx")
 SKYSEG_URL = "https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx"
+_SESSIONS = {}                                      # (path, providers) -> InferenceSession: built once per process
+
+
+def providers():
+    """CUDA where onnxruntime has it; on Apple silicon Core ML (the Neural Engine / GPU) unless SOLV3R_SKYSEG_CPU=1;
+    the CPU always as the fallback."""
+    import onnxruntime
+
+    avail = onnxruntime.get_available_providers()
+    out = [p for p in ("CUDAExecutionProvider",) if p in avail]
+    if "CoreMLExecutionProvider" in avail and not os.environ.get("SOLV3R_SKYSEG_CPU"):
+        out.append(("CoreMLExecutionProvider", {"MLComputeUnits": os.environ.get("SOLV3R_SKYSEG_UNITS", "ALL"),
+                                                "ModelFormat": "MLProgram"}))
+    return out + ["CPUExecutionProvider"]
 
 
 def _load_session(intra_op_num_threads=4, inter_op_num_threads=1):
-    """The skyseg ONNX model, downloaded to ./skyseg.onnx on first use."""
+    """The skyseg ONNX model, downloaded to SKYSEG_ONNX_PATH (./skyseg.onnx) on first use; one session per process."""
     import onnxruntime
+
+    prov = providers()
+    key = (SKYSEG_ONNX_PATH, repr(prov))
+    if key in _SESSIONS:
+        return _SESSIONS[key]
 
     if not os.path.exists(SKYSEG_ONNX_PATH):
         print(f"Downloading {SKYSEG_ONNX_PATH}...")
+        os.makedirs(os.path.dirname(os.path.abspath(SKYSEG_ONNX_PATH)), exist_ok=True)
         tmp = SKYSEG_ONNX_PATH + ".part"
         urllib.request.urlretrieve(SKYSEG_URL, tmp)
         os.replace(tmp, SKYSEG_ONNX_PATH)
     opts = onnxruntime.SessionOptions()
     opts.intra_op_num_threads = intra_op_num_threads
     opts.inter_op_num_threads = inter_op_num_threads
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    return onnxruntime.InferenceSession(SKYSEG_ONNX_PATH, sess_options=opts, providers=providers)
+    try:
+        session = onnxruntime.InferenceSession(SKYSEG_ONNX_PATH, sess_options=opts, providers=prov)
+    except Exception:  # noqa: BLE001  (a provider that cannot take the model: the CPU always can)
+        session = onnxruntime.InferenceSession(SKYSEG_ONNX_PATH, sess_options=opts, providers=["CPUExecutionProvider"])
+    _SESSIONS[key] = session
+    return session
 
 
 def segment_sky(images):

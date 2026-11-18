@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
+from .device import sync as _device_sync
 from .model import Context, autocast, cameras_from_pose_enc
 
 
@@ -59,8 +60,7 @@ def _relative(pose_enc, hw):
 
 
 def _sync(device):
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
+    _device_sync(device)
 
 
 class StreamingSolver:

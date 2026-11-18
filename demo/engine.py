@@ -25,7 +25,9 @@ from solv3r.network.block import _attn_kv, _attn_with_cache
 
 from solv3r.viewer.pack import frame_of, pack_solve, pack_stream, solve_export, stream_export
 
-DEV = "cuda" if torch.cuda.is_available() or os.environ.get("SPACES_ZERO_GPU") else "cpu"
+from solv3r import device as D                                       # noqa: E402
+DEV = "cuda" if torch.cuda.is_available() or os.environ.get("SPACES_ZERO_GPU") else D.best_device().type   # cuda / mps / cpu
+KV_DTYPE = {"cuda": torch.bfloat16, "mps": torch.float16}.get(DEV, torch.float32)   # cached keys / values (large mode)
 SNAPS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)
 OUT = os.environ.get("SOLV3R_DEMO_TMP", os.path.join(tempfile.gettempdir(), "solv3r_demo"))
 os.makedirs(OUT, exist_ok=True)
@@ -58,8 +60,7 @@ def model():
 
 
 def sync():
-    if DEV == "cuda":
-        torch.cuda.synchronize()
+    D.sync(DEV)
 
 
 def new_dir(tag):
@@ -301,6 +302,9 @@ def _peak(sess):
     if DEV == "cuda":
         sess.peak_gb = max(sess.peak_gb, torch.cuda.max_memory_allocated() / 2 ** 30)
         sess.gpu = torch.cuda.get_device_name(0).replace("NVIDIA ", "")
+    elif DEV == "mps":                                 # no peak counter on MPS: the allocation now (a lower bound)
+        sess.peak_gb = max(sess.peak_gb, torch.mps.current_allocated_memory() / 2 ** 30)
+        sess.gpu = D.device_name(DEV).replace(" (MPS)", "")
 
 
 # ---------------------------------------------------------------------- calls with bookkeeping
@@ -758,7 +762,7 @@ class Stochastic:
         attn = self.blk.global_attn.attn
         self.Hh = attn.num_heads
         self.z = m.start(ctx).float()
-        self.K = torch.empty(self.N, self.Hh, self.P, self.C // self.Hh, dtype=torch.bfloat16, device=DEV)
+        self.K = torch.empty(self.N, self.Hh, self.P, self.C // self.Hh, dtype=KV_DTYPE, device=DEV)
         self.Vv = torch.empty_like(self.K)
         tgt = float(self.blk.target_rms[3])
         self.e = torch.full((self.N,), tgt ** 2 * self.P * self.C, device=DEV)
@@ -772,8 +776,8 @@ class Stochastic:
         with autocast():
             y = self.blk._frame(self.z[S], self.ctx.x0[S], self.ctx.pos[S]).reshape(1, b * self.P, self.C)
             k, v = _attn_kv(self.blk.global_attn.attn, self.blk.global_attn.norm1(y))
-        self.K[S] = k[0].reshape(self.Hh, b, self.P, -1).permute(1, 0, 2, 3).to(torch.bfloat16)
-        self.Vv[S] = v[0].reshape(self.Hh, b, self.P, -1).permute(1, 0, 2, 3).to(torch.bfloat16)
+        self.K[S] = k[0].reshape(self.Hh, b, self.P, -1).permute(1, 0, 2, 3).to(KV_DTYPE)
+        self.Vv[S] = v[0].reshape(self.Hh, b, self.P, -1).permute(1, 0, 2, 3).to(KV_DTYPE)
 
     @torch.no_grad()
     def update(self, S):

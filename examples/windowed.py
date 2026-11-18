@@ -27,6 +27,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from solv3r import Solv3R, list_images, load_images  # noqa: E402
+from solv3r import device as D  # noqa: E402
 from solv3r.export import scene_points, write_html, write_ply  # noqa: E402
 from solv3r.images import model_size  # noqa: E402
 from solv3r.model import autocast, cameras_from_pose_enc  # noqa: E402
@@ -107,8 +108,9 @@ def main():
     model = Solv3R.from_pretrained(a.checkpoint)
     paths = list_images(a.images, a.stride)
     n = len(paths)
-    gpu = torch.cuda.get_device_properties(0)
-    free_gb = torch.cuda.mem_get_info()[0] / 1024**3
+    mem = D.memory_info(model.device)                  # CUDA, Apple MPS (unified memory) or CPU
+    free_gb = mem["free_gb"]
+    peak = D.PeakMemory(model.device).start()
     budget_gb = None
     W = a.window
     if W is None and a.vram_gb is not None:
@@ -158,7 +160,7 @@ def main():
         c2w, K = cameras_from_pose_enc(pred["pose_enc"], tuple(pred["depth"].shape[1:3]))
         c2w, K = c2w.numpy().astype(np.float64), K.numpy()
         del ctx, z, z_next, pred
-        torch.cuda.empty_cache()
+        D.empty_cache(model.device)
 
         # similarity transform of this window into the global frame
         if prev is None:
@@ -203,15 +205,15 @@ def main():
         json.dump(dict(window=W, overlap=O, frames=n, windows=info), f, indent=1)
     with open(f"{a.out}/note.txt", "w") as f:
         f.write(f"mode: windowed offline (examples/windowed.py)\n")
-        f.write(f"gpu: {gpu.name}\n")
-        f.write(f"gpu_total_vram_gb: {gpu.total_memory / 1024**3:.1f}\n")
+        f.write(f"gpu: {D.device_name(model.device)}\n")
+        f.write(f"gpu_total_vram_gb: {mem['total_gb']:.1f}\n")
         f.write(f"gpu_free_vram_gb_at_start: {free_gb:.1f}\n")
         f.write(f"vram_budget_gb: {'none' if budget_gb is None else format(budget_gb, '.1f')}\n")
         f.write(f"frames_used: {n}\n")
         f.write(f"window: {W}\noverlap: {O}\nwindows: {len(starts)}\n")
         f.write(f"max_alignment_residual_rel: {max(w['median_residual_rel'] for w in info):.4f}\n")
         f.write(f"points: {len(xyz)}\n")
-        f.write(f"peak_torch_vram_gb: {torch.cuda.max_memory_allocated() / 1024**3:.2f}\n")
+        f.write(f"peak_torch_vram_gb: {peak.stop():.2f}\n")
         f.write(f"total_seconds: {time.time() - t0:.0f}\n")
         f.write(f"command: {' '.join(sys.argv)}\n")
 

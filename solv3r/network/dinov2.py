@@ -30,17 +30,24 @@ class DinoV2Encoder(nn.Module):
         self.blocks = nn.ModuleList([Block(embed_dim, num_heads, mlp_ratio, init_values=1.0, norm_eps=1e-6)
                                      for _ in range(depth)])
         self.norm = nn.LayerNorm(embed_dim, elementwise_affine=False)    # DVLT's feature normalization
+        self._pos_cache = {}                                              # (h, w, device, dtype) -> interpolated pos_embed
 
     def interpolate_pos_encoding(self, x, h, w):
-        previous_dtype = x.dtype
-        npatch = x.shape[1] - 1
+        """The position embedding resized to the patch grid of an (h, w) image, computed once per size (on the CPU: the
+        antialiased bicubic resize is not implemented on every device) and cached."""
+        key = (h, w, x.device, x.dtype)
+        if key not in self._pos_cache:
+            self._pos_cache[key] = self._interpolate_pos_encoding(x.shape[1] - 1, h, w).to(x.device, x.dtype)
+        return self._pos_cache[key]
+
+    def _interpolate_pos_encoding(self, npatch, h, w):
         N = self.pos_embed.shape[1] - 1
         if npatch == N and h == w:
-            return self.pos_embed
-        pos_embed = self.pos_embed.float()
+            return self.pos_embed.detach().float().cpu()
+        pos_embed = self.pos_embed.detach().float().cpu()
         class_pos_embed = pos_embed[:, 0]
         patch_pos_embed = pos_embed[:, 1:]
-        dim = x.shape[-1]
+        dim = pos_embed.shape[-1]
         h0, w0 = h // self.patch_size, w // self.patch_size
         M = int(math.sqrt(N))
         assert N == M * M
@@ -48,7 +55,7 @@ class DinoV2Encoder(nn.Module):
                                                     mode="bicubic", antialias=self.interpolate_antialias, size=(h0, w0))
         assert (h0, w0) == patch_pos_embed.shape[-2:]
         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
-        return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
+        return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1)
 
     def forward(self, x):
         _, _, h, w = x.shape
